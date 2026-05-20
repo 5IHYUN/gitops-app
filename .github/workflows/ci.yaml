@@ -50,18 +50,20 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Docker Buildx 설정
+        uses: docker/setup-buildx-action@v3
 
       - name: Docker 빌드 및 Push
         env:
           IMAGE_TAG: ${{ steps.tag.outputs.tag }}
         run: |
-          docker build \
+          docker buildx build \
+            --platform linux/arm64 \
             -t $DOCKERHUB_IMAGE:$IMAGE_TAG \
+            -t $DOCKERHUB_IMAGE:latest \
             -f ops-app/Dockerfile \
-            ./ops-app
-          docker push $DOCKERHUB_IMAGE:$IMAGE_TAG
-          docker tag $DOCKERHUB_IMAGE:$IMAGE_TAG $DOCKERHUB_IMAGE:latest
-          docker push $DOCKERHUB_IMAGE:latest
+            ./ops-app \
+            --push
 
   update-config:
     name: Update Config Repo
