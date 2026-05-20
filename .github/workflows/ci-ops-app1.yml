@@ -1,6 +1,6 @@
 # gitops-app/.github/workflows/ci-ops-app1.yml
 
-name: CI ops-app1 (ECR)
+name: CI ops-app1 (DockerHub)
 
 on:
   push:
@@ -11,22 +11,20 @@ on:
 
 env:
   APP_NAME: ops-app1
-  ECR_REPOSITORY: ops-app1
-  AWS_REGION: ap-northeast-2
+  DOCKERHUB_IMAGE: shkim5971/ops-app1
   CONFIG_REPO: 5IHYUN/gitops-config
   CONFIG_REPO_PATH: apps/ops-app1/overlays
 
 permissions:
-  id-token: write
   contents: read
 
 jobs:
   ci:
-    name: Build and Push to ECR
+    name: Build and Push to DockerHub
     runs-on: ubuntu-24.04
 
     outputs:
-      image-repo-tag: ${{ steps.export.outputs.image-repo-tag }}
+      image-tag: ${{ steps.export.outputs.image-tag }}
 
     steps:
       - uses: actions/checkout@v4
@@ -42,32 +40,34 @@ jobs:
         working-directory: ./ops-app1
         run: mvn test -q
 
-      - name: AWS OIDC 인증
-        uses: aws-actions/configure-aws-credentials@v4
+      - name: Docker Buildx 설정
+        uses: docker/setup-buildx-action@v3
+
+      - name: DockerHub 로그인
+        uses: docker/login-action@v3
         with:
-          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-terraform-role
-          aws-region: ${{ env.AWS_REGION }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: ECR 로그인
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Docker 빌드 및 ECR Push
-        working-directory: ./ops-app1
+      - name: Docker 빌드 및 Push
         run: |
           TAG="sha-${GITHUB_SHA::7}"
-          REGISTRY="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
-          URI="${REGISTRY}/${{ env.ECR_REPOSITORY }}:${TAG}"
 
-          docker build -t ${URI} .
-          docker push ${URI}
+          docker buildx build \
+            --platform linux/arm64 \
+            -t ${{ env.DOCKERHUB_IMAGE }}:${TAG} \
+            -t ${{ env.DOCKERHUB_IMAGE }}:latest \
+            -f ops-app1/Dockerfile \
+            ./ops-app1 \
+            --push
 
           echo "IMAGE_TAG=${TAG}" >> $GITHUB_ENV
 
       - name: Export image outputs
         id: export
         run: |
-          echo "image-repo-tag=${{ env.ECR_REPOSITORY }}:${IMAGE_TAG}" >> $GITHUB_OUTPUT
-          echo "확인 image-repo-tag=${{ env.ECR_REPOSITORY }}:${IMAGE_TAG}"
+          echo "image-tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+          echo "확인 image-tag=${IMAGE_TAG}"
 
   update-config:
     name: Update Config Repo
@@ -77,10 +77,6 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     steps:
-      - name: 값 확인
-        run: |
-          echo "image-repo-tag=${{ needs.ci.outputs.image-repo-tag }}"
-
       - name: Config Repo 체크아웃
         uses: actions/checkout@v4
         with:
@@ -95,19 +91,22 @@ jobs:
 
       - name: dev overlay 이미지 업데이트
         run: |
-          FULL_URI="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ needs.ci.outputs.image-repo-tag }}"
-          echo "Updated: ${{ env.APP_NAME }}=${FULL_URI}"
+          IMAGE_TAG="${{ needs.ci.outputs.image-tag }}"
+          FULL_IMAGE="${{ env.DOCKERHUB_IMAGE }}:${IMAGE_TAG}"
 
-          cd config-repo/${{ env.CONFIG_REPO_PATH }}/eks-dev
+          echo "Updated: ${{ env.APP_NAME }}=${FULL_IMAGE}"
 
-          kustomize edit set image ${{ env.APP_NAME }}=${FULL_URI}
+          cd config-repo/${{ env.CONFIG_REPO_PATH }}/dev
+
+          kustomize edit set image ${{ env.APP_NAME }}=${FULL_IMAGE}
 
           echo "===== 변경 결과 ====="
           cat kustomization.yaml
 
       - name: Config Repo 커밋·Push
         run: |
-          FULL_URI="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ needs.ci.outputs.image-repo-tag }}"
+          IMAGE_TAG="${{ needs.ci.outputs.image-tag }}"
+          FULL_IMAGE="${{ env.DOCKERHUB_IMAGE }}:${IMAGE_TAG}"
 
           cd config-repo
 
@@ -117,6 +116,6 @@ jobs:
           git add .
 
           git diff --staged --quiet || git commit \
-            -m "chore: update ${{ env.APP_NAME }} dev image to ${FULL_URI} [skip ci]"
+            -m "chore: update ${{ env.APP_NAME }} dev image to ${FULL_IMAGE} [skip ci]"
 
           git push
